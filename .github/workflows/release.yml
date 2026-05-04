@@ -23,6 +23,8 @@ jobs:
             target: aarch64-apple-darwin
           - runner: macos-15-intel
             target: x86_64-apple-darwin
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -42,6 +44,7 @@ jobs:
         run: cargo build --release --bins --locked --target "${{ matrix.target }}"
 
       - name: Package release archive
+        shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
           chmod +x scripts/release/package-release.sh
@@ -55,7 +58,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
           if-no-files-found: error
 
   publish:
@@ -71,11 +76,11 @@ jobs:
           path: dist
 
       - name: Flatten artifact directories
-        run: find dist -type f -name '*.tar.gz' -exec mv {} dist/ \;
+        run: find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec mv {} dist/ \;
 
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum *.tar.gz > SHA256SUMS
+        run: sha256sum *.tar.gz *.zip > SHA256SUMS
 
       - name: Publish GitHub release assets
         env:
@@ -92,15 +97,15 @@ jobs:
           fi
 
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS --clobber
+            gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.zip dist/SHA256SUMS --clobber
             if [[ ${#notes_args[@]} -gt 0 ]]; then
               gh release edit "${GITHUB_REF_NAME}" "${notes_args[@]}"
             fi
           else
             if [[ ${#notes_args[@]} -gt 0 ]]; then
-              gh release create "${GITHUB_REF_NAME}" --verify-tag "${notes_args[@]}" dist/*.tar.gz dist/SHA256SUMS
+              gh release create "${GITHUB_REF_NAME}" --verify-tag "${notes_args[@]}" dist/*.tar.gz dist/*.zip dist/SHA256SUMS
             else
-              gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag dist/*.tar.gz dist/SHA256SUMS
+              gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag dist/*.tar.gz dist/*.zip dist/SHA256SUMS
             fi
           fi
 
@@ -118,6 +123,9 @@ jobs:
 
       - name: Flatten artifact directories
         run: find dist -type f -name '*.tar.gz' -exec mv {} dist/ \;
+
+      # Homebrew tap only consumes mac/linux tarballs; Windows .zip artifacts
+      # are intentionally ignored here.
 
       - name: Compute platform checksums
         id: checksums

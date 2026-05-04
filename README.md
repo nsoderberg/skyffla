@@ -67,6 +67,24 @@ Linux release tarballs are published as static `*-unknown-linux-musl` builds so
 they run on a wider range of distros, including older WSL Ubuntu images that do
 not provide the `glibc` version from the GitHub Actions runner.
 
+### Windows
+
+Windows builds are published as a `.zip` archive on the GitHub Releases page:
+
+```
+skyffla-v<version>-x86_64-pc-windows-msvc.zip
+```
+
+Download the archive, extract it, and either run `skyffla.exe` from the
+extracted folder or move it onto a directory on your `PATH`. The TUI is best
+used from Windows Terminal or PowerShell 7.
+
+```powershell
+.\skyffla.exe --version
+```
+
+The Homebrew tap is macOS/Linux only; there is no Scoop/winget package yet.
+
 ## Quick Start
 
 Open two or more terminals and join the same room.
