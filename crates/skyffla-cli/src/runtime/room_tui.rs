@@ -939,6 +939,15 @@ fn local_command_feedback_lines(
 }
 
 fn split_shell_words(line: &str) -> Result<Vec<String>, CliError> {
+    // Characters that `\` is allowed to escape. Anything else after a `\`
+    // is treated as a literal backslash followed by that character, so that
+    // Windows paths like `C:\temp\file.txt` work without quoting. This
+    // mirrors the set produced by `escape_shell_token`, keeping completions
+    // and round-tripping consistent.
+    fn is_escapable(ch: char) -> bool {
+        ch.is_whitespace() || matches!(ch, '\\' | '\'' | '"' | '$' | '`')
+    }
+
     let mut out = Vec::new();
     let mut current = String::new();
     let mut chars = line.chars().peekable();
@@ -946,23 +955,29 @@ fn split_shell_words(line: &str) -> Result<Vec<String>, CliError> {
     while let Some(ch) = chars.next() {
         match quote {
             Some(active) => match ch {
-                '\\' if active == '"' => {
-                    let next = chars
-                        .next()
-                        .ok_or_else(|| CliError::usage("unfinished escape in command"))?;
-                    current.push(next);
-                }
+                '\\' if active == '"' => match chars.peek().copied() {
+                    Some(next) if is_escapable(next) => {
+                        chars.next();
+                        current.push(next);
+                    }
+                    // Non-meta or trailing backslash inside a double-quoted
+                    // string: keep it literal.
+                    Some(_) | None => current.push('\\'),
+                },
                 value if value == active => quote = None,
                 _ => current.push(ch),
             },
             None => match ch {
                 '\'' | '"' => quote = Some(ch),
-                '\\' => {
-                    let next = chars
-                        .next()
-                        .ok_or_else(|| CliError::usage("unfinished escape in command"))?;
-                    current.push(next);
-                }
+                '\\' => match chars.peek().copied() {
+                    Some(next) if is_escapable(next) => {
+                        chars.next();
+                        current.push(next);
+                    }
+                    // Trailing or non-meta backslash: keep it literal so
+                    // unquoted Windows paths survive (e.g. `C:\temp\x.txt`).
+                    Some(_) | None => current.push('\\'),
+                },
                 value if value.is_whitespace() => {
                     if !current.is_empty() {
                         out.push(std::mem::take(&mut current));
@@ -2069,6 +2084,48 @@ mod tests {
             state.display_member(&MemberId::new("m3").unwrap()),
             "beta (m3)"
         );
+    }
+
+    #[test]
+    fn split_shell_words_preserves_windows_paths() {
+        // Unquoted Windows path: backslashes must be kept literal.
+        let tokens = split_shell_words(r"/send all C:\temp\project\deliverable\x.txt")
+            .expect("unquoted windows path tokenizes");
+        assert_eq!(
+            tokens,
+            vec![
+                "/send".to_string(),
+                "all".to_string(),
+                r"C:\temp\project\deliverable\x.txt".to_string(),
+            ]
+        );
+
+        // UNC paths: a leading `\\` collapses to a single `\` because `\\`
+        // is preserved as the documented "literal backslash" escape (used by
+        // tab-completion via `escape_shell_token`). Users wanting a literal
+        // UNC path should either quote the path or double the leading pair
+        // (`\\\\server\share`).
+        let tokens = split_shell_words(r"/send all \\\\server\share\file.txt")
+            .expect("doubled unc path tokenizes");
+        assert_eq!(tokens.last().map(String::as_str), Some(r"\\server\share\file.txt"));
+
+        // Quoted Windows path: same literal preservation inside double quotes.
+        let tokens = split_shell_words(r#"/send all "C:\temp\file with space.txt""#)
+            .expect("quoted windows path tokenizes");
+        assert_eq!(tokens.last().map(String::as_str), Some(r"C:\temp\file with space.txt"));
+
+        // `\ ` still escapes a space outside quotes (existing behavior).
+        let tokens = split_shell_words(r"/send all folder\ name/file.txt")
+            .expect("escaped space tokenizes");
+        assert_eq!(tokens.last().map(String::as_str), Some("folder name/file.txt"));
+
+        // `\\` still produces a single backslash.
+        let tokens = split_shell_words(r"/x a\\b").expect("double backslash tokenizes");
+        assert_eq!(tokens.last().map(String::as_str), Some(r"a\b"));
+
+        // `\"` inside a double-quoted string still escapes the quote.
+        let tokens = split_shell_words(r#"/x "a\"b""#).expect("escaped quote tokenizes");
+        assert_eq!(tokens.last().map(String::as_str), Some("a\"b"));
     }
 
     #[test]
