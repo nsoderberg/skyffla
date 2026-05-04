@@ -229,7 +229,15 @@ impl UiState {
                     return Some(submitted);
                 }
             }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Accept printable characters. On Windows, AltGr is reported as
+            // `CONTROL | ALT`, which is how characters like '\', '@', '{',
+            // '}', '[', ']', '|', '~' and currency symbols are produced on
+            // many non-US keyboard layouts. Treat that combination as a
+            // normal keystroke; only reject pure Ctrl shortcuts.
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
                 self.history_index = None;
                 self.draft_buffer = None;
                 self.input_buffer.insert(self.cursor_index, c);
@@ -543,3 +551,50 @@ fn compact_timestamp() -> String {
 fn clip_line(text: &str, width: usize) -> String {
     text.chars().take(width).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    fn ui() -> UiState {
+        UiState::new("room", "alice", "peer").expect("UiState::new")
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn plain_char_is_inserted() {
+        let mut ui = ui();
+        assert_eq!(ui.handle_key_event(key(KeyCode::Char('a'), KeyModifiers::NONE)), None);
+        assert_eq!(ui.input_buffer, "a");
+    }
+
+    #[test]
+    fn ctrl_char_is_not_inserted() {
+        // Pure Ctrl shortcuts must not leak into the input buffer.
+        let mut ui = ui();
+        let _ = ui.handle_key_event(key(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        assert_eq!(ui.input_buffer, "");
+    }
+
+    #[test]
+    fn altgr_char_is_inserted_on_windows_layouts() {
+        // Regression: on Windows non-US layouts, characters typed with AltGr
+        // (e.g. '\\', '@', '{', '|') are reported as CONTROL | ALT and were
+        // previously dropped, breaking input like `/send all C:\path\file`.
+        let mut ui = ui();
+        let altgr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        let _ = ui.handle_key_event(key(KeyCode::Char('\\'), altgr));
+        let _ = ui.handle_key_event(key(KeyCode::Char('@'), altgr));
+        assert_eq!(ui.input_buffer, "\\@");
+    }
+}
+
